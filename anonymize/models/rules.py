@@ -1,5 +1,5 @@
 from abc import abstractmethod, ABC
-from typing import Literal, Union
+from typing import Literal, Union, Callable, Dict, ClassVar
 from pydantic import BaseModel, Field, validator
 
 import hashlib
@@ -37,7 +37,8 @@ class HashTransform(BaseModel, AbstractTransform):
             pl.col(self.column)
             .cast(pl.String)
             .map_elements(
-                lambda x: hash_fun((x + self.salt).encode()).hexdigest(), return_dtype=pl.String
+                lambda x: hash_fun((x + self.salt).encode()).hexdigest(),
+                return_dtype=pl.String,
             )
         )
 
@@ -46,24 +47,30 @@ class FakeTransform(BaseModel, AbstractTransform):
     column: str
     method: Literal["fake"] = "fake"
     faker_type: str
+    _faker_methods: ClassVar[Dict[str, Callable[[], str]]] = {
+        "email": faker.person.email,
+        "firstname": faker.person.first_name,
+    }
 
     @validator("faker_type")
     def validate_type(cls, v):
-        AVAILABLE_TYPES = {"email", "firstname"}
-        if v not in AVAILABLE_TYPES:
-            raise ValueError(f"faker_type must be one of {AVAILABLE_TYPES}")
+        available_types = cls._faker_methods.keys()
+        if v not in available_types:
+            raise ValueError(f"faker_type must be one of {available_types}")
         return v
 
     def apply(self, data: pl.LazyFrame) -> pl.LazyFrame:
         logger.info(f"Applying fake {self.faker_type} transformation on column {self.column}")
-        if self.faker_type == "email":
-            faker_method = faker.person.email
-        elif self.faker_type == "firstname":
-            faker_method = faker.person.first_name
+
+        faker_method = self._faker_methods.get(self.faker_type)
+
+        if not faker_method:
+            raise ValueError(f"Unknown faker type {self.faker_type}")
+
         return data.with_columns(
             pl.col(self.column)
             .cast(pl.String)
-            .map_elements(lambda x: faker_method(), return_dtype=pl.String)
+            .map_elements(lambda _: faker_method(), return_dtype=pl.String)
         )
 
 
@@ -85,7 +92,8 @@ class MaskRightTransform(BaseModel, AbstractTransform):
                         pl.col(self.column)
                         .cast(pl.String)
                         .str.slice(
-                            0, pl.col(self.column).cast(pl.String).str.len_chars() - self.n_chars
+                            0,
+                            pl.col(self.column).cast(pl.String).str.len_chars() - self.n_chars,
                         ),
                         pl.lit(self.mask_char * self.n_chars),
                     ],
@@ -141,4 +149,10 @@ class DestroyTransform(BaseModel):
         return data.with_columns(pl.lit(self.replace_with).alias(self.column))
 
 
-Rule = Union[HashTransform, FakeTransform, MaskRightTransform, MaskLeftTransform, DestroyTransform]
+Rule = Union[
+    HashTransform,
+    FakeTransform,
+    MaskRightTransform,
+    MaskLeftTransform,
+    DestroyTransform,
+]
